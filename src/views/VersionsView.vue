@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
@@ -8,13 +9,21 @@ import InputText from 'primevue/inputtext'
 import MultiSelect from 'primevue/multiselect'
 import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
+import InvalidationScopePanel from '@/components/InvalidationScopePanel.vue'
 import PageHeader from '@/components/PageHeader.vue'
-import type { VersionChange, VersionSnapshot } from '@/models/domain'
-import { compareSnapshots } from '@/services/selectors'
+import type { ChainEvent, VersionChange, VersionSnapshot } from '@/models/domain'
+import { resumeRequest } from '@/composables/useDraftResume'
+import {
+  chainEventsBetween,
+  compareSnapshots,
+  invalidatedDecisionsBetween,
+  pendingInvalidationScope,
+} from '@/services/selectors'
 import { useThreatModelStore } from '@/stores/threatModel'
 
 const store = useThreatModelStore()
 const toast = useToast()
+const route = useRoute()
 const fromVersionId = ref(store.data.versions[1]?.id ?? store.data.versions[0]?.id ?? '')
 const toVersionId = ref(store.data.versions[0]?.id ?? '')
 const createVisible = ref(false)
@@ -34,6 +43,14 @@ const difference = computed(() =>
   fromVersion.value && toVersion.value
     ? compareSnapshots(fromVersion.value, toVersion.value)
     : { added: [], removed: [], changed: [] },
+)
+// 与会签中心完全相同的失效范围
+const invalidationScope = computed(() => pendingInvalidationScope(store.data))
+const chainDiffs = computed<ChainEvent[]>(() =>
+  chainEventsBetween(store.data.chainEvents, fromVersion.value, toVersion.value),
+)
+const invalidatedInRange = computed(() =>
+  invalidatedDecisionsBetween(store.data, fromVersion.value, toVersion.value),
 )
 
 const entityName = (change: VersionChange): string => {
@@ -60,10 +77,26 @@ const entityName = (change: VersionChange): string => {
   return change.id
 }
 
+const threatLabel = (id: string): string => {
+  const threat = store.data.threats.find((item) => item.id === id)
+  return threat ? `${threat.code} ${threat.title}` : id
+}
+
+const eventSourceLabel = (source: ChainEvent['source']): string =>
+  ({
+    threat: '威胁变更',
+    mitigation: '缓解任务',
+    evidence: '控制证据',
+    risk: '风险值',
+    version: '版本快照',
+    remote: '另一窗口',
+  })[source]
+
 const openCreate = (): void => {
   createForm.label = `v1.${store.data.currentRevision + 1} 变更评审`
   createForm.notes = ''
-  createForm.affectedThreatIds = []
+  // 预填当前统一失效范围，与左侧会签中心看到的待办一致
+  createForm.affectedThreatIds = invalidationScope.value.map((entry) => entry.threatId)
   createVisible.value = true
 }
 
@@ -76,15 +109,26 @@ const createVersion = (): void => {
     toast.add({ severity: 'error', summary: '校验失败', detail: '至少选择一条受影响威胁', life: 3000 })
     return
   }
-  const snapshot = store.createVersion(
+  const result = store.createVersion(
     createForm.label,
     createForm.notes,
     createForm.affectedThreatIds,
   )
+  if (!result.ok) {
+    createVisible.value = true
+    toast.add({
+      severity: 'error',
+      summary: result.reason === 'conflict' ? '版本冲突：对方刚提交，版本号需顺延' : '写入失败，版本草稿已保留',
+      detail: '草稿保留在顶部“草稿”中，可恢复后重新创建。',
+      life: 4000,
+    })
+    return
+  }
+  const snapshot = result.snapshot
   fromVersionId.value = toVersionId.value
-  toVersionId.value = snapshot.id
+  if (snapshot) toVersionId.value = snapshot.id
   createVisible.value = false
-  toast.add({ severity: 'success', summary: '版本已创建', detail: '仅受影响威胁进入重新审核', life: 3000 })
+  toast.add({ severity: 'success', summary: '版本已创建', detail: '受影响威胁进入重新会签，旧意见已作废', life: 3000 })
 }
 
 const approvalLabel = (snapshot: VersionSnapshot): string =>
@@ -92,6 +136,18 @@ const approvalLabel = (snapshot: VersionSnapshot): string =>
     const threat = store.data.threats.find((item) => item.id === id)
     return threat?.reviewStatus === 'approved'
   }).length}/${snapshot.affectedThreatIds.length}`
+
+watch(resumeRequest, (request) => {
+  if (!request || route.path !== '/versions') return
+  const { draft } = request
+  if (draft.action !== 'create_version') return
+  const payload = draft.payload as { label: string; notes: string; affectedThreatIds: string[] }
+  createForm.label = payload.label
+  createForm.notes = payload.notes
+  createForm.affectedThreatIds = payload.affectedThreatIds
+  createVisible.value = true
+  toast.add({ severity: 'info', summary: '已恢复版本创建草稿', detail: draft.title, life: 3000 })
+})
 </script>
 
 <template>
@@ -99,8 +155,10 @@ const approvalLabel = (snapshot: VersionSnapshot): string =>
     <PageHeader
       eyebrow="审计与基线"
       title="版本差异"
-      description="比较模型基线，识别组件、数据流、控制与风险变化，并限定重新审核的威胁范围。"
+      description="统一版本链：比较基线差异，查看缓解任务、控制证据与风险值变更导致的会签失效范围。"
     />
+
+    <InvalidationScopePanel :scope="invalidationScope" class="scope-panel" compact />
 
     <section class="panel">
       <div class="panel-header">
@@ -146,6 +204,37 @@ const approvalLabel = (snapshot: VersionSnapshot): string =>
           <span v-else class="muted">无移除项</span>
         </div>
       </div>
+
+      <div class="chain-diff">
+        <h4>版本链事件（{{ chainDiffs.length }}）</h4>
+        <p v-if="!chainDiffs.length" class="muted">该区间内没有缓解任务、控制证据或风险值变更。</p>
+        <article v-for="event in chainDiffs" :key="event.id" class="chain-event">
+          <div class="chain-event-head">
+            <span class="source-tag">{{ eventSourceLabel(event.source) }}</span>
+            <strong>{{ event.summary }}</strong>
+            <span v-if="event.remote" class="remote-tag">另一窗口</span>
+            <span class="muted">v1.{{ event.revision }}</span>
+          </div>
+          <div class="chain-event-meta">
+            <span v-for="field in event.changedFields" :key="field" class="field-chip">{{ field }}</span>
+          </div>
+          <p class="muted">
+            受影响威胁：{{ event.affectedThreatIds.map(threatLabel).join('、') || '无' }} ·
+            作废旧会签 {{ event.invalidatedDecisionIds.length }} 条
+          </p>
+        </article>
+      </div>
+
+      <div v-if="invalidatedInRange.length" class="invalidated-box">
+        <h4><i class="pi pi-lock"></i> 该区间作废的会签意见（{{ invalidatedInRange.length }} 条，只读保留）</h4>
+        <article v-for="item in invalidatedInRange" :key="item.decision.id" class="invalidated-row">
+          <span class="mono">{{ threatLabel(item.decision.threatId) }}</span>
+          <span>{{ item.decision.actor }}（{{ item.decision.role }}）</span>
+          <span>v1.{{ item.decision.revision }} → v1.{{ item.event.revision }}</span>
+          <span class="muted">{{ item.event.summary }}</span>
+        </article>
+      </div>
+
       <div class="changed-list">
         <h4>重新审核差异</h4>
         <div v-for="item in difference.changed" :key="item" class="changed-item">
@@ -216,7 +305,7 @@ const approvalLabel = (snapshot: VersionSnapshot): string =>
           />
         </div>
         <div class="field field-wide">
-          <label>受影响威胁</label>
+          <label>受影响威胁（默认带入统一失效范围）</label>
           <MultiSelect
             v-model="createForm.affectedThreatIds"
             :options="store.data.threats"
@@ -226,7 +315,7 @@ const approvalLabel = (snapshot: VersionSnapshot): string =>
             filter
             placeholder="只选择需要重新会签的威胁"
           />
-          <small class="muted">未选择的威胁保持已通过状态，不会进入新版本会签队列。</small>
+          <small class="muted">被选中的威胁其当前会签意见立即作废并回到待重新会签；未选择的威胁保持已通过状态。</small>
         </div>
       </div>
       <template #footer>
@@ -238,6 +327,10 @@ const approvalLabel = (snapshot: VersionSnapshot): string =>
 </template>
 
 <style scoped>
+.scope-panel {
+  margin-bottom: 16px;
+}
+
 .compare-toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 40px minmax(0, 1fr);
@@ -294,6 +387,98 @@ const approvalLabel = (snapshot: VersionSnapshot): string =>
   font-size: 11px;
 }
 
+.chain-diff {
+  padding: 0 16px 14px;
+}
+
+.chain-diff h4,
+.invalidated-box h4 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.chain-event {
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid #e6e2d4;
+  border-left: 3px solid #d97706;
+  border-radius: 5px;
+  background: #fdfaf3;
+}
+
+.chain-event-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.chain-event-head strong {
+  font-size: 12px;
+}
+
+.source-tag {
+  padding: 1px 8px;
+  border-radius: 3px;
+  color: #7a5a17;
+  background: #f6ead2;
+  font-size: 10px;
+}
+
+.remote-tag {
+  padding: 1px 8px;
+  border-radius: 3px;
+  color: #b04436;
+  background: #fdece9;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.chain-event-meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 7px 0;
+}
+
+.field-chip {
+  padding: 1px 8px;
+  border: 1px solid #e0d7c3;
+  border-radius: 999px;
+  color: #6f6250;
+  font-size: 10px;
+}
+
+.invalidated-box {
+  margin: 0 16px 14px;
+  padding: 12px 14px;
+  border: 1px solid #ecd9b8;
+  border-radius: 6px;
+  background: #fdf8ef;
+}
+
+.invalidated-box h4 {
+  color: #9a6a1c;
+}
+
+.invalidated-row {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr 1fr 2fr;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid #f0e5cf;
+  font-size: 11px;
+  color: #5f5440;
+}
+
+.invalidated-row:last-child {
+  border-bottom: 0;
+}
+
 .changed-list {
   padding: 0 16px 18px;
 }
@@ -320,6 +505,7 @@ const approvalLabel = (snapshot: VersionSnapshot): string =>
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.55fr);
   gap: 16px;
+  margin-top: 16px;
   align-items: start;
 }
 

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
@@ -13,10 +14,12 @@ import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import type { Threat } from '@/models/domain'
 import { createId } from '@/services/repository'
+import { resumeRequest } from '@/composables/useDraftResume'
 import { useThreatModelStore } from '@/stores/threatModel'
 
 const store = useThreatModelStore()
 const toast = useToast()
+const route = useRoute()
 
 const keyword = ref('')
 const severityFilter = ref<string | null>(null)
@@ -164,19 +167,38 @@ const saveThreat = (): void => {
   const saved: Threat = {
     ...threatForm,
     id: threatForm.id || createId('thr'),
-    revision: threatForm.id ? store.data.currentRevision + 1 : store.data.currentRevision,
-    reviewStatus: threatForm.id ? 'in_review' : threatForm.reviewStatus,
   }
-  store.saveThreat(saved)
+  const outcome = store.saveThreat(saved)
+  if (!outcome.ok) {
+    editorVisible.value = true
+    toast.add({
+      severity: 'error',
+      summary: outcome.reason === 'conflict' ? '版本冲突，威胁修改未覆盖对方版本' : '写入失败，草稿已保留',
+      detail: '可在顶部“草稿”中恢复本次编辑。',
+      life: 4000,
+    })
+    return
+  }
   selectedId.value = saved.id
   editorVisible.value = false
   toast.add({
     severity: 'success',
     summary: '威胁已保存',
-    detail: saved.id === threatForm.id ? '修订后已进入重新审核' : saved.title,
+    detail: '该威胁的旧会签意见已按版本链作废，进入重新会签。',
     life: 3000,
   })
 }
+
+watch(resumeRequest, (request) => {
+  if (!request || route.path !== '/threats') return
+  const { draft } = request
+  if (draft.action === 'save_threat' && draft.payload) {
+    Object.assign(threatForm, draft.payload as Threat)
+    editorVisible.value = true
+    selectedId.value = (draft.payload as Threat).id
+    toast.add({ severity: 'info', summary: '已恢复威胁草稿', detail: draft.title, life: 3000 })
+  }
+})
 </script>
 
 <template>

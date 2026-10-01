@@ -1,26 +1,43 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
+import Select from 'primevue/select'
 import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import type { Risk } from '@/models/domain'
+import { resumeRequest } from '@/composables/useDraftResume'
 import { riskLevel, riskScore } from '@/services/selectors'
 import { useThreatModelStore } from '@/stores/threatModel'
 
 const store = useThreatModelStore()
 const toast = useToast()
+const route = useRoute()
 const acceptanceVisible = ref(false)
+const riskEditorVisible = ref(false)
 const selectedRiskId = ref('')
 const acceptanceForm = reactive({
   expiresAt: '',
   condition: '',
 })
+const riskForm = reactive<Risk>({
+  id: '',
+  code: '',
+  title: '',
+  likelihood: 3,
+  impact: 3,
+  status: 'open',
+  owner: '',
+})
+
+const likelihoodOptions = [1, 2, 3, 4, 5].map((value) => ({ label: `${value}`, value: value as 1 | 2 | 3 | 4 | 5 }))
+const impactOptions = likelihoodOptions
 
 const likelihoods = [5, 4, 3, 2, 1] as const
 const impacts = [1, 2, 3, 4, 5] as const
@@ -41,15 +58,84 @@ const openAcceptance = (risk: Risk): void => {
   acceptanceVisible.value = true
 }
 
+const openRiskEditor = (risk: Risk): void => {
+  Object.assign(riskForm, structuredClone(risk))
+  riskEditorVisible.value = true
+}
+
 const submitAcceptance = (): void => {
   if (!acceptanceForm.expiresAt || !acceptanceForm.condition.trim()) {
     toast.add({ severity: 'error', summary: '校验失败', detail: '到期日与接受条件不能为空', life: 3000 })
     return
   }
-  store.acceptRisk(selectedRiskId.value, acceptanceForm.expiresAt, acceptanceForm.condition)
+  const outcome = store.acceptRisk(selectedRiskId.value, acceptanceForm.expiresAt, acceptanceForm.condition)
+  if (!outcome.ok) {
+    toast.add({
+      severity: 'error',
+      summary: outcome.reason === 'conflict' ? '版本冲突，风险接受未覆盖对方版本' : '写入失败，草稿已保留',
+      detail: '可在顶部“草稿”中恢复。',
+      life: 4000,
+    })
+    return
+  }
   acceptanceVisible.value = false
-  toast.add({ severity: 'success', summary: '风险接受已记录', detail: '已写入审计轨迹', life: 2500 })
+  toast.add({ severity: 'success', summary: '风险接受已记录', detail: '已写入审计轨迹与版本链', life: 2500 })
 }
+
+const closeRisk = (risk: Risk): void => {
+  const outcome = store.closeRisk(risk.id)
+  if (!outcome.ok) {
+    toast.add({
+      severity: 'error',
+      summary: outcome.reason === 'conflict' ? '版本冲突，关闭操作已中止' : '写入失败，草稿已保留',
+      detail: '可在顶部“草稿”中恢复。',
+      life: 4000,
+    })
+  }
+}
+
+const saveRiskForm = (): void => {
+  if (!riskForm.title.trim() || !riskForm.owner.trim()) {
+    toast.add({ severity: 'error', summary: '校验失败', detail: '风险标题与负责人不能为空', life: 3000 })
+    return
+  }
+  const outcome = store.saveRisk({ ...riskForm })
+  if (!outcome.ok) {
+    toast.add({
+      severity: 'error',
+      summary: outcome.reason === 'conflict' ? '版本冲突，风险值修改未覆盖对方版本' : '写入失败，草稿已保留',
+      detail: '引用该风险的威胁会按版本链重新会签，可在草稿中恢复编辑。',
+      life: 4000,
+    })
+    return
+  }
+  riskEditorVisible.value = false
+  toast.add({
+    severity: 'success',
+    summary: '风险值已保存',
+    detail: '被引用威胁的旧会签意见已作废，回到待重新会签。',
+    life: 3000,
+  })
+}
+
+watch(resumeRequest, (request) => {
+  if (!request || route.path !== '/risks') return
+  const { draft } = request
+  if (draft.action === 'save_risk' && draft.payload) {
+    Object.assign(riskForm, draft.payload as Risk)
+    riskEditorVisible.value = true
+  } else if (draft.action === 'accept_risk' && draft.payload) {
+    const payload = draft.payload as { riskId: string; expiresAt: string; condition: string }
+    selectedRiskId.value = payload.riskId
+    acceptanceForm.expiresAt = payload.expiresAt
+    acceptanceForm.condition = payload.condition
+    acceptanceVisible.value = true
+  } else if (draft.action === 'close_risk' && draft.payload) {
+    const payload = draft.payload as { riskId: string }
+    const risk = store.data.risks.find((item) => item.id === payload.riskId)
+    if (risk) closeRisk(risk)
+  }
+})
 </script>
 
 <template>
@@ -118,10 +204,11 @@ const submitAcceptance = (): void => {
               <StatusTag :value="data.status" kind="status" />
             </template>
           </Column>
-          <Column header="操作" style="width: 180px">
+          <Column header="操作" style="width: 230px">
             <template #body="{ data }">
+              <Button label="编辑风险值" size="small" text @click="openRiskEditor(data)" />
               <Button label="接受" size="small" text @click="openAcceptance(data)" />
-              <Button label="关闭" size="small" text @click="store.closeRisk(data.id)" />
+              <Button label="关闭" size="small" text @click="closeRisk(data)" />
             </template>
           </Column>
         </DataTable>
@@ -167,6 +254,42 @@ const submitAcceptance = (): void => {
       <template #footer>
         <Button label="取消" severity="secondary" outlined @click="acceptanceVisible = false" />
         <Button label="确认接受" icon="pi pi-check" @click="submitAcceptance" />
+      </template>
+    </Dialog>
+
+    <Dialog v-model:visible="riskEditorVisible" header="编辑风险值（触发版本链重新会签）" modal :style="{ width: '620px' }">
+      <div class="editor-form">
+        <div class="field field-wide">
+          <label>风险编号</label>
+          <InputText v-model="riskForm.code" />
+        </div>
+        <div class="field field-wide">
+          <label>风险标题</label>
+          <InputText v-model="riskForm.title" />
+        </div>
+        <div class="field">
+          <label>可能性（1-5）</label>
+          <Select v-model="riskForm.likelihood" :options="likelihoodOptions" option-label="label" option-value="value" />
+        </div>
+        <div class="field">
+          <label>影响（1-5）</label>
+          <Select v-model="riskForm.impact" :options="impactOptions" option-label="label" option-value="value" />
+        </div>
+        <div class="field field-wide">
+          <label>负责人</label>
+          <InputText v-model="riskForm.owner" />
+        </div>
+        <div class="field field-wide">
+          <div class="score-preview">
+            风险值 = {{ riskForm.likelihood }} × {{ riskForm.impact }} =
+            <strong>{{ riskScore(riskForm) }}</strong>
+            <StatusTag :value="riskLevel(riskScore(riskForm))" kind="severity" />
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <Button label="取消" severity="secondary" outlined @click="riskEditorVisible = false" />
+        <Button label="保存风险值" icon="pi pi-check" @click="saveRiskForm" />
       </template>
     </Dialog>
   </div>
@@ -249,5 +372,15 @@ const submitAcceptance = (): void => {
 .acceptance-form {
   display: grid;
   gap: 16px;
+}
+
+.score-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 5px;
+  background: #f5f7fa;
+  font-size: 13px;
 }
 </style>

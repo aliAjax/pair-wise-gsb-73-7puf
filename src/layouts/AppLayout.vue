@@ -1,12 +1,17 @@
 <script setup lang="ts">
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
+import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
+import DraftCenterDialog from '@/components/DraftCenterDialog.vue'
 import { useThreatModelStore } from '@/stores/threatModel'
 
 const router = useRouter()
 const confirm = useConfirm()
+const toast = useToast()
 const store = useThreatModelStore()
+const draftCenterVisible = ref(false)
 
 const navigation = [
   { label: '工作台', icon: 'pi pi-chart-line', to: '/' },
@@ -20,10 +25,26 @@ const navigation = [
   { label: '导出报告', icon: 'pi pi-file-export', to: '/report' },
 ]
 
+const handleStorage = (event: StorageEvent): void => {
+  if (event.key !== 'scapex-threat-model-v1') return
+  const changed = store.syncFromStorage()
+  if (changed) {
+    toast.add({
+      severity: 'warn',
+      summary: '检测到另一窗口已提交',
+      detail: `当前视图已刷新到 v1.${store.data.currentRevision}，再次保存将做冲突检查。`,
+      life: 4000,
+    })
+  }
+}
+
+onMounted(() => window.addEventListener('storage', handleStorage))
+onBeforeUnmount(() => window.removeEventListener('storage', handleStorage))
+
 const reset = (): void => {
   confirm.require({
     header: '恢复演示基线',
-    message: '当前本地修改将被清除，是否继续？',
+    message: '当前本地修改与失败草稿将被清除，是否继续？',
     icon: 'pi pi-exclamation-triangle',
     acceptLabel: '恢复',
     rejectLabel: '取消',
@@ -58,8 +79,8 @@ const reset = (): void => {
         </RouterLink>
       </nav>
       <div class="sidebar-foot">
-        <span>本地持久化</span>
-        <strong>状态已自动保存</strong>
+        <span>统一版本链</span>
+        <strong>缓解 / 证据 / 风险 / 会签已联动</strong>
       </div>
     </aside>
 
@@ -67,13 +88,22 @@ const reset = (): void => {
       <header class="topbar">
         <div>
           <strong>{{ store.data.boundary.name }}</strong>
-          <span>当前基线 v1.{{ store.data.currentRevision }}</span>
+          <span>链版本 v1.{{ store.data.currentRevision }}</span>
         </div>
         <div class="topbar-actions">
           <span class="sync-state">
             <i class="pi pi-cloud-upload"></i>
             最后保存 {{ new Date(store.lastSavedAt).toLocaleTimeString('zh-CN') }}
           </span>
+          <Button
+            :label="`草稿 ${store.drafts.length}`"
+            icon="pi pi-inbox"
+            :severity="store.drafts.length ? 'warn' : 'secondary'"
+            outlined
+            @click="draftCenterVisible = true"
+          >
+            <span v-if="store.drafts.length" class="draft-badge">{{ store.drafts.length }}</span>
+          </Button>
           <Button label="恢复基线" icon="pi pi-history" severity="secondary" outlined @click="reset" />
         </div>
       </header>
@@ -81,6 +111,8 @@ const reset = (): void => {
         <RouterView />
       </section>
     </main>
+
+    <DraftCenterDialog v-model:visible="draftCenterVisible" />
   </div>
 </template>
 
@@ -143,6 +175,7 @@ const reset = (): void => {
 }
 
 .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -219,13 +252,33 @@ const reset = (): void => {
 .topbar-actions {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
 }
 
 .sync-state {
   display: inline-flex;
   align-items: center;
   gap: 7px;
+}
+
+:deep(.p-button) {
+  position: relative;
+}
+
+.draft-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  color: #fff;
+  background: #d97706;
+  font-size: 10px;
+  font-weight: 700;
 }
 
 .content-shell {

@@ -139,7 +139,16 @@ const saveBoundary = (): void => {
     toast.add({ severity: 'error', summary: '校验失败', detail: '边界名称与负责人不能为空', life: 3000 })
     return
   }
-  store.updateBoundary({ ...boundaryForm })
+  const outcome = store.updateBoundary({ ...boundaryForm })
+  if (!outcome.ok) {
+    toast.add({
+      severity: 'error',
+      summary: outcome.reason === 'conflict' ? '版本冲突，系统边界未覆盖对方版本' : '写入失败，草稿已保留',
+      detail: '可在顶部“草稿”中恢复。',
+      life: 4000,
+    })
+    return
+  }
   boundaryVisible.value = false
   toast.add({ severity: 'success', summary: '已保存', detail: '系统边界已更新', life: 2500 })
 }
@@ -149,10 +158,14 @@ const saveComponent = (): void => {
     toast.add({ severity: 'error', summary: '校验失败', detail: '名称、信任区和负责人不能为空', life: 3000 })
     return
   }
-  store.saveEntity('components', {
+  const outcome = store.saveEntity('components', {
     ...componentForm,
     id: componentForm.id || createId('cmp'),
   })
+  if (!outcome.ok) {
+    toast.add({ severity: 'error', summary: outcome.reason === 'conflict' ? '版本冲突' : '写入失败，草稿已保留', detail: '可在顶部“草稿”中恢复。', life: 4000 })
+    return
+  }
   componentVisible.value = false
   toast.add({ severity: 'success', summary: '组件已保存', detail: componentForm.name, life: 2500 })
 }
@@ -166,7 +179,11 @@ const saveFlow = (): void => {
     toast.add({ severity: 'error', summary: '校验失败', detail: '源组件与目标组件不能相同', life: 3000 })
     return
   }
-  store.saveEntity('flows', { ...flowForm, id: flowForm.id || createId('flow') })
+  const outcome = store.saveEntity('flows', { ...flowForm, id: flowForm.id || createId('flow') })
+  if (!outcome.ok) {
+    toast.add({ severity: 'error', summary: outcome.reason === 'conflict' ? '版本冲突' : '写入失败，草稿已保留', detail: '可在顶部“草稿”中恢复。', life: 4000 })
+    return
+  }
   flowVisible.value = false
   toast.add({ severity: 'success', summary: '数据流已保存', detail: flowForm.name, life: 2500 })
 }
@@ -176,10 +193,14 @@ const saveDependency = (): void => {
     toast.add({ severity: 'error', summary: '校验失败', detail: '依赖、供应商和负责人不能为空', life: 3000 })
     return
   }
-  store.saveEntity('dependencies', {
+  const outcome = store.saveEntity('dependencies', {
     ...dependencyForm,
     id: dependencyForm.id || createId('dep'),
   })
+  if (!outcome.ok) {
+    toast.add({ severity: 'error', summary: outcome.reason === 'conflict' ? '版本冲突' : '写入失败，草稿已保留', detail: '可在顶部“草稿”中恢复。', life: 4000 })
+    return
+  }
   dependencyVisible.value = false
   toast.add({ severity: 'success', summary: '外部依赖已保存', detail: dependencyForm.name, life: 2500 })
 }
@@ -190,7 +211,10 @@ const zoneName = (id: string): string =>
   store.data.zones.find((zone) => zone.id === id)?.name ?? id
 
 const saveZone = (zone: TrustZone): void => {
-  store.saveEntity('zones', zone)
+  const outcome = store.saveEntity('zones', zone)
+  if (!outcome.ok) {
+    toast.add({ severity: 'error', summary: outcome.reason === 'conflict' ? '版本冲突' : '写入失败，草稿已保留', detail: '可在顶部“草稿”中恢复。', life: 4000 })
+  }
 }
 </script>
 

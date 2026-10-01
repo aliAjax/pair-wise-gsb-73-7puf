@@ -62,6 +62,7 @@ export interface ControlEvidence {
   expiresAt: string
   owner: string
   valid: boolean
+  revision?: number
 }
 
 export interface SecurityControl {
@@ -94,6 +95,7 @@ export interface Risk {
   owner: string
   acceptanceExpiresAt?: string
   acceptanceCondition?: string
+  revision?: number
 }
 
 export interface Threat {
@@ -125,7 +127,10 @@ export interface MitigationTask {
   detail: string
   evidenceIds: string[]
   conflictGroup?: string
+  revision?: number
 }
+
+export type DecisionStatus = 'active' | 'invalidated'
 
 export interface ReviewDecision {
   id: string
@@ -136,6 +141,33 @@ export interface ReviewDecision {
   comment: string
   createdAt: string
   revision: number
+  status: DecisionStatus
+  invalidatedAt?: string
+  invalidationEventId?: string
+  invalidationReason?: string
+}
+
+export type ChainChangeSource =
+  | 'threat'
+  | 'mitigation'
+  | 'evidence'
+  | 'risk'
+  | 'version'
+  | 'remote'
+
+export interface ChainEvent {
+  id: string
+  revision: number
+  createdAt: string
+  actor: string
+  source: ChainChangeSource
+  sourceId: string
+  summary: string
+  changedFields: string[]
+  affectedThreatIds: string[]
+  invalidatedDecisionIds: string[]
+  snapshotId?: string
+  remote?: boolean
 }
 
 export interface VersionSnapshot {
@@ -151,6 +183,7 @@ export interface VersionSnapshot {
   controlIds: string[]
   riskIds: string[]
   affectedThreatIds: string[]
+  chainEventId?: string
 }
 
 export interface AuditEvent {
@@ -177,8 +210,46 @@ export interface ThreatModelState {
   mitigations: MitigationTask[]
   decisions: ReviewDecision[]
   versions: VersionSnapshot[]
+  chainEvents: ChainEvent[]
   audit: AuditEvent[]
   currentRevision: number
+  stateToken: string
+}
+
+export type DraftActionType =
+  | 'save_threat'
+  | 'save_mitigation'
+  | 'save_evidence'
+  | 'save_risk'
+  | 'submit_decision'
+  | 'create_version'
+  | 'update_mitigation_status'
+  | 'accept_risk'
+  | 'close_risk'
+  | 'update_boundary'
+
+export interface PendingDraft {
+  id: string
+  action: DraftActionType
+  entityId: string
+  title: string
+  createdAt: string
+  baseRevision: number
+  baseToken: string
+  reason: 'conflict' | 'write_failure'
+  payload: unknown
+  remoteSummary?: string
+}
+
+export type SaveOutcome =
+  | { ok: true }
+  | { ok: false; reason: 'conflict'; draftId: string; remoteState: ThreatModelState }
+  | { ok: false; reason: 'write_failure'; draftId: string; error: string }
+
+export interface EntityConflict {
+  remote: unknown
+  draft: unknown
+  changedFields: string[]
 }
 
 export interface ValidationIssue {
@@ -199,4 +270,14 @@ export interface VersionDifference {
   added: VersionChange[]
   removed: VersionChange[]
   changed: string[]
+}
+
+export interface InvalidationScopeEntry {
+  threatId: string
+  threatCode: string
+  threatTitle: string
+  reviewStatus: ReviewStatus
+  latestEvent?: ChainEvent
+  invalidatedDecisionCount: number
+  activeDecisionCount: number
 }

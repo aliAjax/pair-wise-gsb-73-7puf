@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
@@ -11,11 +12,13 @@ import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import type { ControlEvidence } from '@/models/domain'
 import { createId } from '@/services/repository'
+import { resumeRequest } from '@/composables/useDraftResume'
 import { evidenceIsExpired } from '@/services/selectors'
 import { useThreatModelStore } from '@/stores/threatModel'
 
 const store = useThreatModelStore()
 const toast = useToast()
+const route = useRoute()
 const editorVisible = ref(false)
 const validityFilter = ref<string | null>(null)
 const controlFilter = ref<string | null>(null)
@@ -104,10 +107,30 @@ const saveEvidence = (): void => {
     toast.add({ severity: 'error', summary: '校验失败', detail: '到期日必须晚于采集日', life: 3000 })
     return
   }
-  store.saveEntity('evidence', { ...form, id: form.id || createId('ev') })
+  const outcome = store.saveEntity('evidence', { ...form, id: form.id || createId('ev') })
+  if (!outcome.ok) {
+    editorVisible.value = true
+    toast.add({
+      severity: 'error',
+      summary: outcome.reason === 'conflict' ? '版本冲突，证据修改未覆盖对方版本' : '写入失败，草稿已保留',
+      detail: '可在顶部“草稿”中恢复本次编辑。',
+      life: 4000,
+    })
+    return
+  }
   editorVisible.value = false
   toast.add({ severity: 'success', summary: '证据已保存', detail: form.title, life: 2500 })
 }
+
+watch(resumeRequest, (request) => {
+  if (!request || route.path !== '/evidence') return
+  const { draft } = request
+  if (draft.action === 'save_evidence' && draft.payload) {
+    Object.assign(form, draft.payload as ControlEvidence)
+    editorVisible.value = true
+    toast.add({ severity: 'info', summary: '已恢复证据草稿', detail: draft.title, life: 3000 })
+  }
+})
 </script>
 
 <template>
@@ -246,6 +269,18 @@ const saveEvidence = (): void => {
         <div class="field">
           <label>到期日期</label>
           <InputText v-model="form.expiresAt" type="date" />
+        </div>
+        <div class="field field-wide">
+          <label>证据有效性</label>
+          <Select
+            v-model="form.valid"
+            :options="[
+              { label: '有效（可用于证明控制生效）', value: true },
+              { label: '已失效（将打回引用该证据的威胁重新会签）', value: false },
+            ]"
+            option-label="label"
+            option-value="value"
+          />
         </div>
       </div>
       <template #footer>

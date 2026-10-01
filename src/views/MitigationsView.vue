@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
@@ -13,10 +14,12 @@ import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import type { MitigationTask } from '@/models/domain'
 import { createId } from '@/services/repository'
+import { resumeRequest } from '@/composables/useDraftResume'
 import { useThreatModelStore } from '@/stores/threatModel'
 
 const store = useThreatModelStore()
 const toast = useToast()
+const route = useRoute()
 const statusFilter = ref<string | null>(null)
 const editorVisible = ref(false)
 
@@ -94,7 +97,17 @@ const saveTask = (): void => {
     toast.add({ severity: 'error', summary: '校验失败', detail: '威胁、任务、负责人和截止日期不能为空', life: 3000 })
     return
   }
-  store.saveEntity('mitigations', { ...form, id: form.id || createId('mit') })
+  const outcome = store.saveEntity('mitigations', { ...form, id: form.id || createId('mit') })
+  if (!outcome.ok) {
+    editorVisible.value = true
+    toast.add({
+      severity: 'error',
+      summary: outcome.reason === 'conflict' ? '版本冲突，未覆盖对方提交' : '写入失败，草稿已保留',
+      detail: '可在顶部“草稿”中恢复本次编辑。',
+      life: 4000,
+    })
+    return
+  }
   editorVisible.value = false
   toast.add({ severity: 'success', summary: '缓解任务已保存', detail: form.title, life: 2500 })
 }
@@ -103,6 +116,37 @@ const nextStatus = (status: MitigationTask['status']): MitigationTask['status'] 
   const sequence: MitigationTask['status'][] = ['todo', 'in_progress', 'verifying', 'done']
   return sequence[Math.min(sequence.indexOf(status) + 1, sequence.length - 1)]
 }
+
+const advanceStatus = (task: MitigationTask): void => {
+  const outcome = store.updateMitigationStatus(task.id, nextStatus(task.status))
+  if (!outcome.ok) {
+    toast.add({
+      severity: 'error',
+      summary: outcome.reason === 'conflict' ? '版本冲突，对方刚提交了处置' : '写入失败，草稿已保留',
+      detail: '任务状态未被覆盖，可从草稿重试。',
+      life: 4000,
+    })
+  }
+}
+
+// 草稿恢复：保存失败或冲突后从草稿箱回填
+watch(resumeRequest, (request) => {
+  if (!request || route.path !== '/mitigations') return
+  const { draft } = request
+  if (draft.action === 'save_mitigation' && draft.payload) {
+    Object.assign(form, draft.payload as MitigationTask)
+    editorVisible.value = true
+    toast.add({ severity: 'info', summary: '已恢复缓解任务草稿', detail: draft.title, life: 3000 })
+  } else if (draft.action === 'update_mitigation_status' && draft.payload) {
+    const payload = draft.payload as { id: string; status: MitigationTask['status'] }
+    const task = store.data.mitigations.find((item) => item.id === payload.id)
+    const outcome = store.updateMitigationStatus(payload.id, payload.status)
+    if (outcome.ok) {
+      store.discardDraft(draft.id)
+      toast.add({ severity: 'success', summary: '草稿已重新提交', detail: task?.title, life: 3000 })
+    }
+  }
+})
 </script>
 
 <template>
@@ -175,7 +219,7 @@ const nextStatus = (status: MitigationTask['status']): MitigationTask['status'] 
               icon="pi pi-arrow-right"
               size="small"
               text
-              @click="store.updateMitigationStatus(data.id, nextStatus(data.status))"
+              @click="advanceStatus(data)"
             />
           </template>
         </Column>

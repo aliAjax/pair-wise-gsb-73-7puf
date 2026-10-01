@@ -1,5 +1,7 @@
 import type {
+  ChainEvent,
   ControlEvidence,
+  InvalidationScopeEntry,
   ReviewDecision,
   Risk,
   Severity,
@@ -139,7 +141,91 @@ export const decisionsForThreat = (
   threatId: string,
   revision: number,
 ): ReviewDecision[] =>
-  decisions.filter((decision) => decision.threatId === threatId && decision.revision === revision)
+  decisions.filter(
+    (decision) =>
+      decision.threatId === threatId &&
+      decision.revision === revision &&
+      decision.status === 'active',
+  )
+
+/** 某条威胁的全部会签意见，含已被版本链作废的历史意见（只读保留）。 */
+export const decisionHistoryForThreat = (
+  decisions: ReviewDecision[],
+  threatId: string,
+): ReviewDecision[] => decisions.filter((decision) => decision.threatId === threatId)
+
+export const decisionIsCurrent = (decision: ReviewDecision, threat?: Threat): boolean =>
+  decision.status === 'active' && (threat ? decision.revision === threat.revision : true)
+
+export const latestEventForThreat = (
+  events: ChainEvent[],
+  threatId: string,
+  maxRevision?: number,
+): ChainEvent | undefined =>
+  events.find(
+    (event) =>
+      event.affectedThreatIds.includes(threatId) &&
+      (maxRevision === undefined || event.revision <= maxRevision),
+  )
+
+/**
+ * 统一失效范围：版本比较页和会签中心共用这一份计算结果，
+ * 保证“同一失效范围”在两个页面完全一致。
+ */
+export const pendingInvalidationScope = (state: ThreatModelState): InvalidationScopeEntry[] => {
+  const pendingThreats = state.threats.filter((threat) => threat.reviewStatus === 'in_review')
+  return pendingThreats
+    .map((threat) => {
+      const history = decisionHistoryForThreat(state.decisions, threat.id)
+      return {
+        threatId: threat.id,
+        threatCode: threat.code,
+        threatTitle: threat.title,
+        reviewStatus: threat.reviewStatus,
+        latestEvent: latestEventForThreat(state.chainEvents, threat.id),
+        invalidatedDecisionCount: history.filter(
+          (decision) => decision.status === 'invalidated',
+        ).length,
+        activeDecisionCount: history.filter(
+          (decision) => decision.revision === threat.revision && decision.status === 'active',
+        ).length,
+      }
+    })
+    .sort((a, b) => b.invalidatedDecisionCount - a.invalidatedDecisionCount)
+}
+
+/** 两个版本快照之间发生的版本链事件（含对端窗口远程提交）。 */
+export const chainEventsBetween = (
+  events: ChainEvent[],
+  from: VersionSnapshot | null,
+  to: VersionSnapshot | null,
+): ChainEvent[] => {
+  const low = from?.revision ?? 0
+  const high = to?.revision ?? Number.MAX_SAFE_INTEGER
+  const [lo, hi] = low <= high ? [low, high] : [high, low]
+  return events.filter((event) => event.revision > lo && event.revision <= hi)
+}
+
+/** 版本区间内被作废的会签意见（用于版本比较页的失效范围展示）。 */
+export const invalidatedDecisionsBetween = (
+  state: ThreatModelState,
+  from: VersionSnapshot | null,
+  to: VersionSnapshot | null,
+): { decision: ReviewDecision; event: ChainEvent }[] => {
+  const events = chainEventsBetween(state.chainEvents, from, to)
+  const eventById = new Map(events.map((event) => [event.id, event]))
+  return state.decisions
+    .filter(
+      (decision) =>
+        decision.status === 'invalidated' &&
+        decision.invalidationEventId &&
+        eventById.has(decision.invalidationEventId),
+    )
+    .map((decision) => ({
+      decision,
+      event: eventById.get(decision.invalidationEventId as string) as ChainEvent,
+    }))
+}
 
 export const reviewProgress = (decisions: ReviewDecision[]): number => {
   const roles = new Set(decisions.map((decision) => decision.role))

@@ -1,5 +1,6 @@
 import type {
   AuditEvent,
+  ChainEvent,
   ControlEvidence,
   MitigationTask,
   ReviewDecision,
@@ -113,6 +114,7 @@ const decisions: ReviewDecision[] = [
     comment: '补充专线访问失败时的旁路告警证据。',
     createdAt: '2026-09-24T09:18:00+08:00',
     revision: 2,
+    status: 'active',
   },
   {
     id: 'dec-02',
@@ -123,6 +125,7 @@ const decisions: ReviewDecision[] = [
     comment: '密钥轮换已进入校验阶段。',
     createdAt: '2026-09-26T14:32:00+08:00',
     revision: 2,
+    status: 'active',
   },
   {
     id: 'dec-03',
@@ -133,6 +136,7 @@ const decisions: ReviewDecision[] = [
     comment: '首期接受按日抽检，月结窗口需双人审批。',
     createdAt: '2026-09-27T11:05:00+08:00',
     revision: 2,
+    status: 'active',
   },
 ]
 
@@ -164,6 +168,23 @@ const baselineVersions: VersionSnapshot[] = [
     controlIds: ['ctl-01', 'ctl-02', 'ctl-03', 'ctl-04'],
     riskIds: ['risk-01', 'risk-02', 'risk-03', 'risk-04'],
     affectedThreatIds: ['thr-01', 'thr-02'],
+    chainEventId: 'chn-ver-02',
+  },
+]
+
+const chainEvents: ChainEvent[] = [
+  {
+    id: 'chn-ver-02',
+    revision: 2,
+    createdAt: '2026-09-20T16:40:00+08:00',
+    actor: '林策',
+    source: 'version',
+    sourceId: 'ver-02',
+    summary: '创建版本 v1.1 合作伙伴接入，伙伴数据同步链路改变跨信任区传输风险',
+    changedFields: ['新增组件 cmp-06', '新增数据流 flow-05', '新增风险 risk-04'],
+    affectedThreatIds: ['thr-01', 'thr-02'],
+    invalidatedDecisionIds: [],
+    snapshotId: 'ver-02',
   },
 ]
 
@@ -514,6 +535,8 @@ export const createSeedState = (): ThreatModelState => ({
   mitigations,
   decisions,
   versions: baselineVersions,
+  chainEvents,
   audit,
   currentRevision: 2,
+  stateToken: 'tok-seed-v1',
 })
