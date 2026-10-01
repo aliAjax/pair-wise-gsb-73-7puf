@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
@@ -9,9 +9,10 @@ import Select from 'primevue/select'
 import { useToast } from 'primevue/usetoast'
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import type { ControlEvidence } from '@/models/domain'
+import type { ControlEvidence, DraftPayload } from '@/models/domain'
 import { createId } from '@/services/repository'
 import { evidenceIsExpired } from '@/services/selectors'
+import { draftStore } from '@/services/drafts'
 import { useThreatModelStore } from '@/stores/threatModel'
 
 const store = useThreatModelStore()
@@ -104,10 +105,45 @@ const saveEvidence = (): void => {
     toast.add({ severity: 'error', summary: '校验失败', detail: '到期日必须晚于采集日', life: 3000 })
     return
   }
-  store.saveEntity('evidence', { ...form, id: form.id || createId('ev') })
-  editorVisible.value = false
-  toast.add({ severity: 'success', summary: '证据已保存', detail: form.title, life: 2500 })
+  const evidence: ControlEvidence = { ...form, id: form.id || createId('ev') }
+  const outcome = store.saveEntity('evidence', evidence, {
+    kind: 'evidence',
+    title: evidence.title,
+    route: '/evidence',
+    payload: evidence,
+    contextId: evidence.id,
+  })
+  if (outcome.ok) {
+    editorVisible.value = false
+    toast.add({ severity: 'success', summary: '证据已保存', detail: form.title, life: 2500 })
+    return
+  }
+  toast.add({
+    severity: outcome.conflict ? 'warn' : 'error',
+    summary: outcome.conflict ? '并发冲突，证据未覆盖对方版本' : '写入失败，证据草稿已保留',
+    detail: outcome.conflict
+      ? '对方窗口先提交了控制证据或会签意见，处理冲突后可恢复草稿。'
+      : '对话框内容与顶部草稿条均已保留。',
+    life: 4200,
+  })
 }
+
+const restoreDraft = (draft: DraftPayload): void => {
+  Object.assign(form, draft.payload)
+  editorVisible.value = true
+  toast.add({ severity: 'info', summary: '已恢复控制证据草稿', detail: '请基于最新版本核对后重新保存。', life: 3500 })
+}
+
+let unsubscribe: (() => void) | undefined
+onMounted(() => {
+  unsubscribe = draftStore.on('evidence', restoreDraft)
+  const pending = draftStore.takePending('evidence')
+  if (pending) {
+    restoreDraft(pending)
+    draftStore.remove(pending.id)
+  }
+})
+onUnmounted(() => unsubscribe?.())
 </script>
 
 <template>

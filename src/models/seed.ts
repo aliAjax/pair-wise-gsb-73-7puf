@@ -113,6 +113,10 @@ const decisions: ReviewDecision[] = [
     comment: '补充专线访问失败时的旁路告警证据。',
     createdAt: '2026-09-24T09:18:00+08:00',
     revision: 2,
+    basisFingerprint: '',
+    validity: 'active',
+    invalidatedAt: null,
+    invalidationReason: null,
   },
   {
     id: 'dec-02',
@@ -123,6 +127,10 @@ const decisions: ReviewDecision[] = [
     comment: '密钥轮换已进入校验阶段。',
     createdAt: '2026-09-26T14:32:00+08:00',
     revision: 2,
+    basisFingerprint: '',
+    validity: 'active',
+    invalidatedAt: null,
+    invalidationReason: null,
   },
   {
     id: 'dec-03',
@@ -133,6 +141,10 @@ const decisions: ReviewDecision[] = [
     comment: '首期接受按日抽检，月结窗口需双人审批。',
     createdAt: '2026-09-27T11:05:00+08:00',
     revision: 2,
+    basisFingerprint: '',
+    validity: 'active',
+    invalidatedAt: null,
+    invalidationReason: null,
   },
 ]
 
@@ -149,6 +161,9 @@ const baselineVersions: VersionSnapshot[] = [
     flowIds: ['flow-01', 'flow-02', 'flow-03', 'flow-04'],
     controlIds: ['ctl-01', 'ctl-02', 'ctl-03', 'ctl-04'],
     riskIds: ['risk-01', 'risk-02', 'risk-03'],
+    mitigationIds: ['mit-01', 'mit-02', 'mit-03', 'mit-04'],
+    evidenceIds: ['ev-01', 'ev-02', 'ev-03', 'ev-04'],
+    basisFingerprints: {},
     affectedThreatIds: ['thr-01', 'thr-02', 'thr-03'],
   },
   {
@@ -163,6 +178,9 @@ const baselineVersions: VersionSnapshot[] = [
     flowIds: ['flow-01', 'flow-02', 'flow-03', 'flow-04', 'flow-05'],
     controlIds: ['ctl-01', 'ctl-02', 'ctl-03', 'ctl-04'],
     riskIds: ['risk-01', 'risk-02', 'risk-03', 'risk-04'],
+    mitigationIds: ['mit-01', 'mit-02', 'mit-03', 'mit-04'],
+    evidenceIds: ['ev-01', 'ev-02', 'ev-03', 'ev-04'],
+    basisFingerprints: {},
     affectedThreatIds: ['thr-01', 'thr-02'],
   },
 ]
@@ -409,6 +427,11 @@ export const createSeedState = (): ThreatModelState => ({
       riskIds: ['risk-01'],
       reviewStatus: 'in_review',
       revision: 2,
+      basisFingerprint: '',
+      chainToken: '',
+      invalidationPending: false,
+      lastInvalidationReason: null,
+      lastInvalidatedAt: null,
     },
     {
       id: 'thr-02',
@@ -426,6 +449,11 @@ export const createSeedState = (): ThreatModelState => ({
       riskIds: ['risk-02'],
       reviewStatus: 'approved',
       revision: 2,
+      basisFingerprint: '',
+      chainToken: '',
+      invalidationPending: false,
+      lastInvalidationReason: null,
+      lastInvalidatedAt: null,
     },
     {
       id: 'thr-03',
@@ -443,6 +471,11 @@ export const createSeedState = (): ThreatModelState => ({
       riskIds: ['risk-03'],
       reviewStatus: 'in_review',
       revision: 2,
+      basisFingerprint: '',
+      chainToken: '',
+      invalidationPending: false,
+      lastInvalidationReason: null,
+      lastInvalidatedAt: null,
     },
   ],
   attackPaths: [
@@ -514,6 +547,7 @@ export const createSeedState = (): ThreatModelState => ({
   mitigations,
   decisions,
   versions: baselineVersions,
+  invalidations: [],
   audit,
   currentRevision: 2,
 })

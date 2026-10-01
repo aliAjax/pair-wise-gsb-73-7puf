@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
@@ -9,8 +9,10 @@ import MultiSelect from 'primevue/multiselect'
 import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
 import PageHeader from '@/components/PageHeader.vue'
-import type { VersionChange, VersionSnapshot } from '@/models/domain'
+import InvalidationScopePanel from '@/components/InvalidationScopePanel.vue'
+import type { DraftPayload, VersionChange, VersionSnapshot } from '@/models/domain'
 import { compareSnapshots } from '@/services/selectors'
+import { draftStore } from '@/services/drafts'
 import { useThreatModelStore } from '@/stores/threatModel'
 
 const store = useThreatModelStore()
@@ -33,7 +35,14 @@ const toVersion = computed(
 const difference = computed(() =>
   fromVersion.value && toVersion.value
     ? compareSnapshots(fromVersion.value, toVersion.value)
-    : { added: [], removed: [], changed: [] },
+    : { added: [], removed: [], changed: [], basisChangedThreatIds: [] },
+)
+
+const basisChangedThreats = computed(
+  () =>
+    difference.value.basisChangedThreatIds
+      .map((id) => store.data.threats.find((threat) => threat.id === id))
+      .filter(Boolean),
 )
 
 const entityName = (change: VersionChange): string => {
@@ -76,16 +85,51 @@ const createVersion = (): void => {
     toast.add({ severity: 'error', summary: '校验失败', detail: '至少选择一条受影响威胁', life: 3000 })
     return
   }
-  const snapshot = store.createVersion(
-    createForm.label,
-    createForm.notes,
-    createForm.affectedThreatIds,
-  )
+  const snapshot = store.createVersion(createForm.label, createForm.notes, createForm.affectedThreatIds, {
+    kind: 'version',
+    title: createForm.label,
+    route: '/versions',
+    payload: { ...createForm },
+  })
+  if (!snapshot) {
+    createVisible.value = false
+    toast.add({
+      severity: store.activeConflict ? 'warn' : 'error',
+      summary: store.activeConflict ? '并发冲突，版本未创建' : '写入失败，版本草稿已保留',
+      detail: store.activeConflict
+        ? '另一窗口已提交，创建版本的内容已存为草稿，可在冲突窗口处理后恢复。'
+        : '可从顶部草稿条恢复后重试。',
+      life: 4000,
+    })
+    return
+  }
   fromVersionId.value = toVersionId.value
   toVersionId.value = snapshot.id
   createVisible.value = false
-  toast.add({ severity: 'success', summary: '版本已创建', detail: '仅受影响威胁进入重新审核', life: 3000 })
+  toast.add({ severity: 'success', summary: '版本已创建', detail: '受影响威胁的旧会签意见已失效', life: 3000 })
 }
+
+const restoreDraft = (draft: DraftPayload): void => {
+  Object.assign(createForm, draft.payload)
+  createVisible.value = true
+  toast.add({
+    severity: 'info',
+    summary: '已恢复版本草稿',
+    detail: '请确认最新版本号与受影响威胁后重新创建。',
+    life: 3500,
+  })
+}
+
+let unsubscribe: (() => void) | undefined
+onMounted(() => {
+  unsubscribe = draftStore.on('version', restoreDraft)
+  const pending = draftStore.takePending('version')
+  if (pending) {
+    restoreDraft(pending)
+    draftStore.remove(pending.id)
+  }
+})
+onUnmounted(() => unsubscribe?.())
 
 const approvalLabel = (snapshot: VersionSnapshot): string =>
   `${snapshot.affectedThreatIds.filter((id) => {
@@ -99,7 +143,7 @@ const approvalLabel = (snapshot: VersionSnapshot): string =>
     <PageHeader
       eyebrow="审计与基线"
       title="版本差异"
-      description="比较模型基线，识别组件、数据流、控制与风险变化，并限定重新审核的威胁范围。"
+      description="比较模型基线与统一版本链：识别组件、数据流、控制、风险以及会签基准（缓解/证据/风险值）的变化，失效范围与会签页一致。"
     />
 
     <section class="panel">
@@ -146,6 +190,20 @@ const approvalLabel = (snapshot: VersionSnapshot): string =>
           <span v-else class="muted">无移除项</span>
         </div>
       </div>
+
+      <div class="basis-diff diff-padding">
+        <h4>会签基准变化（与会签页同一失效范围）</h4>
+        <ul v-if="basisChangedThreats.length" class="basis-list">
+          <li v-for="threat in basisChangedThreats" :key="threat!.id">
+            <span class="mono">{{ threat!.code }}</span>
+            {{ threat!.title }}
+            <i class="pi pi-arrow-right"></i>
+            <em>旧会签意见失效，需重新会签</em>
+          </li>
+        </ul>
+        <span v-else class="muted">两个版本之间没有威胁的会签基准（缓解任务/证据/风险值）发生变化。</span>
+      </div>
+
       <div class="changed-list">
         <h4>重新审核差异</h4>
         <div v-for="item in difference.changed" :key="item" class="changed-item">
@@ -154,6 +212,8 @@ const approvalLabel = (snapshot: VersionSnapshot): string =>
         </div>
       </div>
     </section>
+
+    <InvalidationScopePanel class="shared-scope" :limit="5" />
 
     <div class="versions-grid">
       <section class="panel">
@@ -226,7 +286,7 @@ const approvalLabel = (snapshot: VersionSnapshot): string =>
             filter
             placeholder="只选择需要重新会签的威胁"
           />
-          <small class="muted">未选择的威胁保持已通过状态，不会进入新版本会签队列。</small>
+          <small class="muted">创建后受影响威胁的旧会签意见立即失效（保留只读），并进入会签页的待重签队列。</small>
         </div>
       </div>
       <template #footer>
@@ -294,6 +354,53 @@ const approvalLabel = (snapshot: VersionSnapshot): string =>
   font-size: 11px;
 }
 
+.basis-diff {
+  padding-top: 4px;
+}
+
+.basis-diff h4 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: #8a4a12;
+}
+
+.basis-list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.basis-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border: 1px solid #f0d9b8;
+  border-left: 3px solid #d97706;
+  border-radius: 5px;
+  background: #fff8ee;
+  color: #5f5138;
+  font-size: 12px;
+}
+
+.basis-list .mono {
+  color: #3268a6;
+  font-family: monospace;
+}
+
+.basis-list i {
+  color: #d97706;
+  font-size: 10px;
+}
+
+.basis-list em {
+  color: #a23a34;
+  font-style: normal;
+  font-weight: 700;
+}
+
 .changed-list {
   padding: 0 16px 18px;
 }
@@ -316,10 +423,15 @@ const approvalLabel = (snapshot: VersionSnapshot): string =>
   font-size: 10px;
 }
 
+.shared-scope {
+  margin-top: 16px;
+}
+
 .versions-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.55fr);
   gap: 16px;
+  margin-top: 16px;
   align-items: start;
 }
 

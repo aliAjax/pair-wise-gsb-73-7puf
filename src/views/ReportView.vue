@@ -30,7 +30,7 @@ const report = computed(() => {
     ...(includeDecisions.value
       ? store.data.decisions.map(
           (decision) =>
-            `- ${decision.actor}/${decision.role}/${decision.decision}：${decision.comment}`,
+            `- ${decision.actor}/${decision.role}/${decision.decision}${decision.validity === 'active' ? '' : `[${decision.validity === 'invalidated' ? '已失效·只读' : '已覆盖·只读'}]`}：${decision.comment}`,
         )
       : ['- 未包含']),
     '',

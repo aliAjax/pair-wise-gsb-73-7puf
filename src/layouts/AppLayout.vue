@@ -1,11 +1,16 @@
 <script setup lang="ts">
+import { onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
+import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import { useThreatModelStore } from '@/stores/threatModel'
+import ConflictDialog from '@/components/ConflictDialog.vue'
+import DraftRecoveryBar from '@/components/DraftRecoveryBar.vue'
 
 const router = useRouter()
 const confirm = useConfirm()
+const toast = useToast()
 const store = useThreatModelStore()
 
 const navigation = [
@@ -33,6 +38,25 @@ const reset = (): void => {
     },
   })
 }
+
+// 另一个窗口完成提交时（storage 事件）同步对方版本，保证不会用过期版本覆盖
+const handleStorage = (event: StorageEvent): void => {
+  if (!event.key || !event.key.startsWith('scapex-threat-model')) return
+  const result = store.syncFromRemote()
+  if (result.changed) {
+    toast.add({
+      severity: 'warn',
+      summary: '已同步另一窗口的新版本',
+      detail: result.hasDrafts
+        ? '检测到并发提交，本窗口已刷新为最新版本；你的失败草稿仍可恢复。'
+        : '另一窗口已提交，本窗口已自动刷新为最新版本。',
+      life: 4000,
+    })
+  }
+}
+
+onMounted(() => window.addEventListener('storage', handleStorage))
+onUnmounted(() => window.removeEventListener('storage', handleStorage))
 </script>
 
 <template>
@@ -58,8 +82,8 @@ const reset = (): void => {
         </RouterLink>
       </nav>
       <div class="sidebar-foot">
-        <span>本地持久化</span>
-        <strong>状态已自动保存</strong>
+        <span>本地持久化 · 乐观并发</span>
+        <strong>令牌 {{ store.writeToken.slice(-6) }}</strong>
       </div>
     </aside>
 
@@ -70,6 +94,14 @@ const reset = (): void => {
           <span>当前基线 v1.{{ store.data.currentRevision }}</span>
         </div>
         <div class="topbar-actions">
+          <label class="fault-toggle" title="开启后所有保存都会模拟写入失败，用于验收失败草稿与重启恢复">
+            <input
+              type="checkbox"
+              :checked="store.faultInjectionEnabled"
+              @change="store.toggleFaultInjection(($event.target as HTMLInputElement).checked)"
+            />
+            <span>模拟写入失败</span>
+          </label>
           <span class="sync-state">
             <i class="pi pi-cloud-upload"></i>
             最后保存 {{ new Date(store.lastSavedAt).toLocaleTimeString('zh-CN') }}
@@ -77,10 +109,13 @@ const reset = (): void => {
           <Button label="恢复基线" icon="pi pi-history" severity="secondary" outlined @click="reset" />
         </div>
       </header>
+      <DraftRecoveryBar />
       <section class="content-shell">
         <RouterView />
       </section>
     </main>
+
+    <ConflictDialog />
   </div>
 </template>
 
@@ -182,7 +217,8 @@ const reset = (): void => {
 
 .sidebar-foot strong {
   color: #aeb9ca;
-  font-size: 12px;
+  font-family: monospace;
+  font-size: 11px;
 }
 
 .main-shell {
@@ -220,6 +256,16 @@ const reset = (): void => {
   display: flex;
   align-items: center;
   gap: 16px;
+}
+
+.fault-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #a23a34;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
 }
 
 .sync-state {

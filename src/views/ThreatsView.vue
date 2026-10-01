@@ -13,6 +13,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import type { Threat } from '@/models/domain'
 import { createId } from '@/services/repository'
+import { newChainToken } from '@/services/versionChain'
 import { useThreatModelStore } from '@/stores/threatModel'
 
 const store = useThreatModelStore()
@@ -68,6 +69,11 @@ const threatForm = reactive<Threat>({
   riskIds: [],
   reviewStatus: 'draft',
   revision: store.data.currentRevision,
+  basisFingerprint: '',
+  chainToken: '',
+  invalidationPending: false,
+  lastInvalidationReason: null,
+  lastInvalidatedAt: null,
 })
 
 const filteredThreats = computed(() => {
@@ -140,6 +146,11 @@ const addThreat = (): void => {
     riskIds: [],
     reviewStatus: 'draft',
     revision: store.data.currentRevision,
+    basisFingerprint: '',
+    chainToken: '',
+    invalidationPending: false,
+    lastInvalidationReason: null,
+    lastInvalidatedAt: null,
   } satisfies Threat)
   editorVisible.value = true
 }
@@ -161,13 +172,31 @@ const saveThreat = (): void => {
     return
   }
 
+  const existing = threatForm.id
+    ? store.data.threats.find((threat) => threat.id === threatForm.id)
+    : undefined
   const saved: Threat = {
     ...threatForm,
     id: threatForm.id || createId('thr'),
     revision: threatForm.id ? store.data.currentRevision + 1 : store.data.currentRevision,
     reviewStatus: threatForm.id ? 'in_review' : threatForm.reviewStatus,
+    // 保留统一版本链字段；编辑已有威胁时 store 会重置 chainToken 触发旧意见失效
+    basisFingerprint: existing?.basisFingerprint ?? '',
+    chainToken: existing?.chainToken ?? newChainToken(),
+    invalidationPending: Boolean(threatForm.id),
+    lastInvalidationReason: threatForm.id ? 'threat' : null,
+    lastInvalidatedAt: threatForm.id ? new Date().toISOString() : null,
   }
-  store.saveThreat(saved)
+  const outcome = store.saveThreat(saved)
+  if (!outcome.ok) {
+    toast.add({
+      severity: outcome.conflict ? 'warn' : 'error',
+      summary: outcome.conflict ? '并发冲突，威胁未覆盖对方版本' : '写入失败',
+      detail: outcome.conflict ? '对方窗口已提交，请查看冲突版本后重试。' : '请稍后重试。',
+      life: 4000,
+    })
+    return
+  }
   selectedId.value = saved.id
   editorVisible.value = false
   toast.add({

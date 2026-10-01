@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
@@ -11,8 +11,9 @@ import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import type { MitigationTask } from '@/models/domain'
+import type { DraftPayload, MitigationTask } from '@/models/domain'
 import { createId } from '@/services/repository'
+import { draftStore } from '@/services/drafts'
 import { useThreatModelStore } from '@/stores/threatModel'
 
 const store = useThreatModelStore()
@@ -94,10 +95,89 @@ const saveTask = (): void => {
     toast.add({ severity: 'error', summary: '校验失败', detail: '威胁、任务、负责人和截止日期不能为空', life: 3000 })
     return
   }
-  store.saveEntity('mitigations', { ...form, id: form.id || createId('mit') })
-  editorVisible.value = false
-  toast.add({ severity: 'success', summary: '缓解任务已保存', detail: form.title, life: 2500 })
+  const task: MitigationTask = { ...form, id: form.id || createId('mit') }
+  const outcome = store.saveEntity('mitigations', task, {
+    kind: 'mitigation',
+    title: task.title,
+    route: '/mitigations',
+    payload: task,
+    contextId: task.id,
+  })
+  if (outcome.ok) {
+    editorVisible.value = false
+    toast.add({ severity: 'success', summary: '缓解任务已保存', detail: form.title, life: 2500 })
+    return
+  }
+  // 写入失败/冲突：对话框保持打开，store 已把表单存为草稿
+  toast.add({
+    severity: outcome.conflict ? 'warn' : 'error',
+    summary: outcome.conflict ? '并发冲突，未覆盖对方版本' : '写入失败，草稿已保留',
+    detail: outcome.conflict
+      ? '对方窗口先提交了缓解处置/会签意见，可查看冲突版本后从草稿恢复。'
+      : '对话框内容与顶部草稿条均已保留，恢复后可重试。',
+    life: 4200,
+  })
 }
+
+const advanceStatus = (task: MitigationTask): void => {
+  const outcome = store.updateMitigationStatus(task.id, nextStatus(task.status))
+  if (!outcome.ok) {
+    toast.add({
+      severity: outcome.conflict ? 'warn' : 'error',
+      summary: outcome.conflict ? '并发冲突，状态未覆盖' : '写入失败，状态变更已存草稿',
+      detail: outcome.conflict ? '请先采用对方版本，再从草稿恢复本次状态推进。' : '可从顶部草稿条恢复。',
+      life: 4200,
+    })
+  }
+}
+
+const restoreTaskDraft = (draft: DraftPayload): void => {
+  Object.assign(form, draft.payload)
+  editorVisible.value = true
+  toast.add({ severity: 'info', summary: '已恢复缓解任务草稿', detail: '请基于最新版本核对后重新保存。', life: 3500 })
+}
+
+const restoreStatusDraft = (draft: DraftPayload): void => {
+  const { taskId, status } = draft.payload as { taskId: string; status: MitigationTask['status'] }
+  const task = store.data.mitigations.find((item) => item.id === taskId)
+  const outcome = store.updateMitigationStatus(taskId, status)
+  if (outcome.ok) {
+    toast.add({
+      severity: 'success',
+      summary: '状态草稿已恢复并提交',
+      detail: task ? `${task.title} → ${status}` : '缓解状态已更新',
+      life: 3000,
+    })
+  } else {
+    toast.add({
+      severity: 'error',
+      summary: '恢复后仍未能写入',
+      detail: '当前基线可能又被其他窗口更新，请稍后再试。',
+      life: 3500,
+    })
+  }
+}
+
+let unsubTask: (() => void) | undefined
+let unsubStatus: (() => void) | undefined
+onMounted(() => {
+  unsubTask = draftStore.on('mitigation', restoreTaskDraft)
+  unsubStatus = draftStore.on('mitigation_status', restoreStatusDraft)
+  const pendingTask = draftStore.takePending('mitigation')
+  if (pendingTask) {
+    restoreTaskDraft(pendingTask)
+    draftStore.remove(pendingTask.id)
+  }
+  const pendingStatus = draftStore.takePending('mitigation_status')
+  if (pendingStatus) {
+    restoreStatusDraft(pendingStatus)
+    draftStore.remove(pendingStatus.id)
+  }
+})
+onUnmounted(() => {
+  unsubTask?.()
+  unsubStatus?.()
+})
 
 const nextStatus = (status: MitigationTask['status']): MitigationTask['status'] => {
   const sequence: MitigationTask['status'][] = ['todo', 'in_progress', 'verifying', 'done']
@@ -110,7 +190,7 @@ const nextStatus = (status: MitigationTask['status']): MitigationTask['status'] 
     <PageHeader
       eyebrow="缓解执行"
       title="缓解任务与冲突检查"
-      description="维护各威胁的处置动作、负责人、期限和证据；同一威胁下互斥策略会被自动标记。"
+      description="维护各威胁的处置动作、负责人、期限和证据；任务一改动，引用它的威胁旧会签意见立即失效并回到待重新会签。同一威胁下互斥策略会被自动标记。"
     />
 
     <section v-if="conflictTaskIds.size > 0" class="conflict-banner">
@@ -175,7 +255,7 @@ const nextStatus = (status: MitigationTask['status']): MitigationTask['status'] 
               icon="pi pi-arrow-right"
               size="small"
               text
-              @click="store.updateMitigationStatus(data.id, nextStatus(data.status))"
+              @click="advanceStatus(data)"
             />
           </template>
         </Column>

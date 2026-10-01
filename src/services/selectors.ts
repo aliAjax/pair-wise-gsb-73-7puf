@@ -137,9 +137,31 @@ export const getValidationIssues = (state: ThreatModelState): ValidationIssue[] 
 export const decisionsForThreat = (
   decisions: ReviewDecision[],
   threatId: string,
-  revision: number,
-): ReviewDecision[] =>
-  decisions.filter((decision) => decision.threatId === threatId && decision.revision === revision)
+  revisionOrThreat: number | Threat,
+): ReviewDecision[] => {
+  if (typeof revisionOrThreat === 'number') {
+    // 兼容旧调用：取该 revision 下仍然 active 的意见（active 意见的指纹必然与当前基准一致）
+    return decisions.filter(
+      (decision) =>
+        decision.threatId === threatId &&
+        decision.revision === revisionOrThreat &&
+        decision.validity === 'active',
+    )
+  }
+  const threat = revisionOrThreat
+  return decisions.filter(
+    (decision) =>
+      decision.threatId === threatId &&
+      decision.validity === 'active' &&
+      decision.basisFingerprint === threat.basisFingerprint,
+  )
+}
+
+/** 某条威胁全部历史意见（含已失效、已覆盖），用于只读留档 */
+export const decisionHistoryForThreat = (
+  decisions: ReviewDecision[],
+  threatId: string,
+): ReviewDecision[] => decisions.filter((decision) => decision.threatId === threatId)
 
 export const reviewProgress = (decisions: ReviewDecision[]): number => {
   const roles = new Set(decisions.map((decision) => decision.role))
@@ -168,6 +190,16 @@ export const compareSnapshots = (from: VersionSnapshot, to: VersionSnapshot): Ve
   const affectedBefore = new Set(from.affectedThreatIds)
   const affectedAfter = new Set(to.affectedThreatIds)
 
+  // 统一版本链：两快照间会签基准指纹发生变化的威胁，即会签失效范围
+  const basisChangedThreatIds = (to.basisFingerprints
+    ? Object.keys(to.basisFingerprints)
+    : []
+  ).filter((threatId) => {
+    const before = from.basisFingerprints?.[threatId]
+    const after = to.basisFingerprints?.[threatId]
+    return Boolean(before && after && before !== after)
+  })
+
   return {
     added: [
       ...componentDiff.added,
@@ -183,7 +215,9 @@ export const compareSnapshots = (from: VersionSnapshot, to: VersionSnapshot): Ve
       ...controlDiff.removed,
       ...riskDiff.removed,
     ],
+    basisChangedThreatIds,
     changed: [
+      `会签失效范围：${basisChangedThreatIds.length} 条威胁的会签基准（缓解/证据/风险）发生变化`,
       `受影响威胁：${from.affectedThreatIds.length} → ${to.affectedThreatIds.length}`,
       `新增进入审核：${[...affectedAfter].filter((id) => !affectedBefore.has(id)).join('、') || '无'}`,
       `退出审核：${[...affectedBefore].filter((id) => !affectedAfter.has(id)).join('、') || '无'}`,

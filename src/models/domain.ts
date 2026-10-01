@@ -4,6 +4,22 @@ export type ThreatStatus = 'open' | 'mitigating' | 'mitigated' | 'accepted'
 export type ControlStatus = 'effective' | 'degraded' | 'failed' | 'planned'
 export type ActorRole = 'development' | 'security' | 'business'
 export type DecisionType = 'accept' | 'degrade' | 'evidence_required' | 'approved' | 'rejected'
+/**
+ * 会签意见在统一版本链中的有效性。
+ * - active：与当前威胁会签基准一致，仍然生效
+ * - invalidated：威胁引用的缓解任务、控制证据或风险值等发生改动，意见已失效，仅可查看
+ * - superseded：同一角色在同一基准下提交了新意见，旧意见被覆盖，仅可查看
+ */
+export type DecisionValidity = 'active' | 'invalidated' | 'superseded'
+
+/** 触发会签基准失效的来源 */
+export type InvalidationReason =
+  | 'mitigation'
+  | 'control'
+  | 'evidence'
+  | 'risk'
+  | 'threat'
+  | 'version'
 
 export interface SystemBoundary {
   id: string
@@ -112,6 +128,16 @@ export interface Threat {
   riskIds: string[]
   reviewStatus: ReviewStatus
   revision: number
+  /** 当前会签基准（缓解任务/控制/证据/风险内容）的指纹，意见指纹与此一致才生效 */
+  basisFingerprint: string
+  /** 版本链令牌：创建版本快照时，受影响威胁会重新生成令牌，用于把快照变更接入版本链 */
+  chainToken: string
+  /** 是否处于“会签失效、待重新会签”队列 */
+  invalidationPending: boolean
+  /** 最近一次使该威胁会签失效的来源类型 */
+  lastInvalidationReason: InvalidationReason | null
+  /** 最近一次失效时间（ISO） */
+  lastInvalidatedAt: string | null
 }
 
 export interface MitigationTask {
@@ -136,6 +162,14 @@ export interface ReviewDecision {
   comment: string
   createdAt: string
   revision: number
+  /** 提交时威胁的会签基准指纹 */
+  basisFingerprint: string
+  /** 在版本链中的有效性；旧版本意见失效后保留记录但只能查看 */
+  validity: DecisionValidity
+  /** 失效/被覆盖的时间（ISO） */
+  invalidatedAt: string | null
+  /** 失效原因 */
+  invalidationReason: InvalidationReason | null
 }
 
 export interface VersionSnapshot {
@@ -150,7 +184,29 @@ export interface VersionSnapshot {
   flowIds: string[]
   controlIds: string[]
   riskIds: string[]
+  mitigationIds: string[]
+  evidenceIds: string[]
   affectedThreatIds: string[]
+  /** 快照时刻各威胁的会签基准指纹，用于版本比较页展示会签基准变化 */
+  basisFingerprints: Record<string, string>
+}
+
+/** 一次变更引起的会签失效范围记录，是会签页与版本比较页共享的“失效范围”数据源 */
+export interface InvalidationRecord {
+  id: string
+  createdAt: string
+  actor: string
+  reason: InvalidationReason
+  /** 人类可读的变更来源，如缓解任务名称、证据标题、风险编号 */
+  sourceLabel: string
+  /** 受影响、回到待重新会签的威胁 */
+  threatIds: string[]
+  /** 因此次变更而失效的会签意见 */
+  decisionIds: string[]
+  /** 关联版本快照（若失效由创建版本触发） */
+  versionId?: string
+  /** 与冲突版本相关时，记录对方窗口的写入令牌 */
+  remoteWriteToken?: string
 }
 
 export interface AuditEvent {
@@ -177,8 +233,54 @@ export interface ThreatModelState {
   mitigations: MitigationTask[]
   decisions: ReviewDecision[]
   versions: VersionSnapshot[]
+  invalidations: InvalidationRecord[]
   audit: AuditEvent[]
   currentRevision: number
+}
+
+/** localStorage 持久化信封，writeToken 用于多窗口乐观并发控制 */
+export interface StoredEnvelope {
+  schema: 2
+  writeToken: string
+  updatedAt: string
+  state: ThreatModelState
+}
+
+/** 乐观锁冲突：另一个窗口已先提交，携带对方版本供比较 */
+export interface WriteConflict {
+  expectedToken: string
+  remoteWriteToken: string
+  remoteUpdatedAt: string
+  remoteState: ThreatModelState
+}
+
+/** 写入失败/冲突时保留的草稿，独立于主数据持久化，重启后恢复 */
+export interface DraftPayload {
+  id: string
+  kind:
+    | 'mitigation'
+    | 'evidence'
+    | 'decision'
+    | 'version'
+    | 'risk_acceptance'
+    | 'mitigation_status'
+  title: string
+  route: string
+  payload: unknown
+  contextId?: string
+  reason: 'write_failed' | 'conflict'
+  detail: string
+  createdAt: string
+}
+
+/** 会签失效范围的单一视图模型，会签页与版本比较页共用 */
+export interface InvalidationScopeItem {
+  threatId: string
+  threatCode: string
+  threatTitle: string
+  reasons: InvalidationReason[]
+  invalidatedDecisionCount: number
+  lastInvalidatedAt: string | null
 }
 
 export interface ValidationIssue {
@@ -199,4 +301,6 @@ export interface VersionDifference {
   added: VersionChange[]
   removed: VersionChange[]
   changed: string[]
+  /** 两快照之间会签基准发生变化的威胁 id（即版本链上的失效范围） */
+  basisChangedThreatIds: string[]
 }

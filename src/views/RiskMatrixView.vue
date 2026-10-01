@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
@@ -9,8 +9,9 @@ import Textarea from 'primevue/textarea'
 import { useToast } from 'primevue/usetoast'
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import type { Risk } from '@/models/domain'
+import type { DraftPayload, Risk } from '@/models/domain'
 import { riskLevel, riskScore } from '@/services/selectors'
+import { draftStore } from '@/services/drafts'
 import { useThreatModelStore } from '@/stores/threatModel'
 
 const store = useThreatModelStore()
@@ -46,10 +47,60 @@ const submitAcceptance = (): void => {
     toast.add({ severity: 'error', summary: '校验失败', detail: '到期日与接受条件不能为空', life: 3000 })
     return
   }
-  store.acceptRisk(selectedRiskId.value, acceptanceForm.expiresAt, acceptanceForm.condition)
-  acceptanceVisible.value = false
-  toast.add({ severity: 'success', summary: '风险接受已记录', detail: '已写入审计轨迹', life: 2500 })
+  const riskId = selectedRiskId.value
+  const outcome = store.acceptRisk(riskId, acceptanceForm.expiresAt, acceptanceForm.condition, {
+    kind: 'risk_acceptance',
+    title: store.data.risks.find((risk) => risk.id === riskId)?.code ?? '风险接受',
+    route: '/risks',
+    payload: { riskId, ...acceptanceForm },
+    contextId: riskId,
+  })
+  if (outcome.ok) {
+    acceptanceVisible.value = false
+    toast.add({ severity: 'success', summary: '风险接受已记录', detail: '关联威胁的旧会签意见已失效', life: 2500 })
+    return
+  }
+  toast.add({
+    severity: outcome.conflict ? 'warn' : 'error',
+    summary: outcome.conflict ? '并发冲突，风险值未覆盖对方版本' : '写入失败，接受条件已存草稿',
+    detail: outcome.conflict
+      ? '对方窗口先提交了风险处置，处理冲突后可恢复草稿。'
+      : '对话框内容与顶部草稿条均已保留。',
+    life: 4200,
+  })
 }
+
+const closeRiskById = (riskId: string): void => {
+  const outcome = store.closeRisk(riskId)
+  if (!outcome.ok) {
+    toast.add({
+      severity: outcome.conflict ? 'warn' : 'error',
+      summary: outcome.conflict ? '并发冲突，未覆盖对方版本' : '写入失败',
+      detail: '请刷新为对方最新版本后重试。',
+      life: 3500,
+    })
+  }
+}
+
+const restoreDraft = (draft: DraftPayload): void => {
+  const payload = draft.payload as { riskId: string; expiresAt: string; condition: string }
+  selectedRiskId.value = payload.riskId
+  acceptanceForm.expiresAt = payload.expiresAt
+  acceptanceForm.condition = payload.condition
+  acceptanceVisible.value = true
+  toast.add({ severity: 'info', summary: '已恢复风险接受草稿', detail: '请基于最新版本核对后重新提交。', life: 3500 })
+}
+
+let unsubscribe: (() => void) | undefined
+onMounted(() => {
+  unsubscribe = draftStore.on('risk_acceptance', restoreDraft)
+  const pending = draftStore.takePending('risk_acceptance')
+  if (pending) {
+    restoreDraft(pending)
+    draftStore.remove(pending.id)
+  }
+})
+onUnmounted(() => unsubscribe?.())
 </script>
 
 <template>
@@ -121,7 +172,7 @@ const submitAcceptance = (): void => {
           <Column header="操作" style="width: 180px">
             <template #body="{ data }">
               <Button label="接受" size="small" text @click="openAcceptance(data)" />
-              <Button label="关闭" size="small" text @click="store.closeRisk(data.id)" />
+              <Button label="关闭" size="small" text @click="closeRiskById(data.id)" />
             </template>
           </Column>
         </DataTable>
